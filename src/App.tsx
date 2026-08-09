@@ -1,20 +1,29 @@
 import { useMemo, useRef, useState, type ChangeEvent } from 'react';
+import AddNodeDialog from '@/components/AddNodeDialog';
 import MapCanvas from '@/components/MapCanvas';
+import PoiSearchBox from '@/components/PoiSearchBox';
+import { createId, downloadProjectJson, parseProjectFile, readFileAsText } from '@/lib/projectIo';
 import { orderNodes } from '@/lib/order';
-import { downloadProjectJson, parseProjectFile, readFileAsText } from '@/lib/projectIo';
 import { useProjectStore } from '@/store/projectStore';
+import type { PoiCandidate } from '@/types/poi';
+import type { TravelNode } from '@/types/project';
 
 /**
- * P0-1 外壳：顶部工具条（导出 / 导入 JSON）+ 左侧节点列表 + 右侧画布。
- * 这一版刻意不做视觉，只保证 PRD F1.3 / F1.4 / AC-14 / AC-15 这条数据闭环能被肉眼验证。
+ * 应用外壳：顶部旅行信息 + 工具条，左侧搜索与路线列表，右侧画布。
+ * P0-2 起画布不再有硬编码数据，进入空状态引导。
  */
 export default function App() {
   const project = useProjectStore((s) => s.project);
   const notices = useProjectStore((s) => s.notices);
   const loadProject = useProjectStore((s) => s.loadProject);
   const clearNotices = useProjectStore((s) => s.clearNotices);
+  const updateTripMeta = useProjectStore((s) => s.updateTripMeta);
+  const addNode = useProjectStore((s) => s.addNode);
+  const removeNode = useProjectStore((s) => s.removeNode);
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  /** 当前正在确认添加的候选地点；为 null 表示没有弹窗 */
+  const [pendingCandidate, setPendingCandidate] = useState<PoiCandidate | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const ordered = useMemo(
@@ -28,21 +37,16 @@ export default function App() {
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>): Promise<void> {
     const file = event.target.files?.[0];
-    // 先清空 input 的值，否则连续选同一个文件不会再次触发 change
     event.target.value = '';
     if (!file) {
       return;
     }
-
     // PRD 第六章「防误操作」：覆盖当前工程要二次确认
-    const confirmed = window.confirm('导入会覆盖当前画布上的全部内容，确定继续吗？');
-    if (!confirmed) {
+    if (!window.confirm('导入会覆盖当前画布上的全部内容，确定继续吗？')) {
       return;
     }
-
     setErrorMsg(null);
     clearNotices();
-
     try {
       const text = await readFileAsText(file);
       const result = parseProjectFile(text);
@@ -56,32 +60,79 @@ export default function App() {
     }
   }
 
+  function handleConfirmAdd(payload: { poiName: string; visitDate: string; note: string }): void {
+    if (!pendingCandidate) {
+      return;
+    }
+    const node: TravelNode = {
+      id: createId('node'),
+      poi_name: payload.poiName,
+      lat: pendingCandidate.lat,
+      lng: pendingCandidate.lng,
+      visit_date: payload.visitDate,
+      user_photo: null,
+      // P0-3 接 AI 生成之前，新节点一律先落成纯文字节点（F7.4 第四种形态）
+      icon_type: 'text_only',
+      icon_asset: null,
+      note: payload.note,
+    };
+    addNode(node);
+    setPendingCandidate(null);
+  }
+
+  function handleRemove(node: TravelNode): void {
+    // PRD 第六章：删除节点要二次确认
+    if (window.confirm(`确定删除「${node.poi_name}」吗？`)) {
+      removeNode(node.id);
+    }
+  }
+
+  const { date_range: dateRange } = project.project;
+  const dateRangeInvalid = dateRange.start > dateRange.end;
+
   return (
     <div className="flex h-full w-full flex-col">
-      {/* 顶部工具条 */}
-      <header className="flex items-center gap-3 border-b border-softbrown/30 bg-cream px-5 py-3">
-        <h1 className="mr-auto text-lg font-semibold text-inkbrown">
-          {project.project.name}
-          <span className="ml-3 text-sm font-normal text-inkbrown/60">
-            {project.project.date_range.start} ~ {project.project.date_range.end}
-          </span>
-        </h1>
+      {/* 顶部：旅行信息可直接编辑（F1.1） */}
+      <header className="flex flex-wrap items-center gap-3 border-b border-softbrown/30 bg-cream px-5 py-3">
+        <input
+          type="text"
+          value={project.project.name}
+          maxLength={30}
+          onChange={(e) => updateTripMeta({ name: e.target.value })}
+          className="rounded-md border border-transparent bg-transparent px-2 py-1 text-lg font-semibold text-inkbrown outline-none hover:border-softbrown/30 focus:border-terracotta"
+        />
+        <div className="flex items-center gap-2 text-sm text-inkbrown/70">
+          <input
+            type="date"
+            value={dateRange.start}
+            onChange={(e) => updateTripMeta({ date_range: { ...dateRange, start: e.target.value } })}
+            className="rounded-md border border-softbrown/40 bg-wash px-2 py-1 outline-none focus:border-terracotta"
+          />
+          <span>至</span>
+          <input
+            type="date"
+            value={dateRange.end}
+            onChange={(e) => updateTripMeta({ date_range: { ...dateRange, end: e.target.value } })}
+            className="rounded-md border border-softbrown/40 bg-wash px-2 py-1 outline-none focus:border-terracotta"
+          />
+        </div>
 
-        <button
-          type="button"
-          onClick={handleExport}
-          className="rounded-md bg-terracotta px-4 py-2 text-sm text-cream transition hover:bg-coral"
-        >
-          导出工程 JSON
-        </button>
-
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="rounded-md border border-softbrown px-4 py-2 text-sm text-inkbrown transition hover:bg-wash"
-        >
-          导入工程 JSON
-        </button>
+        <div className="ml-auto flex gap-2">
+          <button
+            type="button"
+            onClick={handleExport}
+            className="rounded-md bg-terracotta px-4 py-2 text-sm text-cream transition hover:bg-coral"
+          >
+            导出工程 JSON
+          </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="rounded-md border border-softbrown px-4 py-2 text-sm text-inkbrown transition hover:bg-wash"
+          >
+            导入工程 JSON
+          </button>
+        </div>
 
         <input
           ref={fileInputRef}
@@ -94,7 +145,12 @@ export default function App() {
         />
       </header>
 
-      {/* 错误提示：面向普通用户的人话文案，不出现技术字段名 */}
+      {dateRangeInvalid ? (
+        <div className="border-b border-terracotta/40 bg-terracotta/10 px-5 py-2 text-sm text-inkbrown">
+          结束日期比开始日期还早，请调整一下旅行时间。
+        </div>
+      ) : null}
+
       {errorMsg ? (
         <div className="flex items-start gap-3 border-b border-terracotta/40 bg-terracotta/10 px-5 py-3 text-sm text-inkbrown">
           <span className="flex-1">{errorMsg}</span>
@@ -104,7 +160,6 @@ export default function App() {
         </div>
       ) : null}
 
-      {/* 数据自愈提示 */}
       {notices.length > 0 ? (
         <div className="flex items-start gap-3 border-b border-mustard/50 bg-mustard/10 px-5 py-3 text-sm text-inkbrown">
           <ul className="flex-1 list-disc pl-5">
@@ -119,27 +174,56 @@ export default function App() {
       ) : null}
 
       <main className="flex min-h-0 flex-1">
-        {/* 左侧节点列表：P0-2 会在这里加拖拽排序（F6.2） */}
-        <aside className="w-64 shrink-0 overflow-y-auto border-r border-softbrown/30 bg-cream/50 p-4">
-          <h2 className="mb-3 text-sm font-semibold text-inkbrown/80">
+        <aside className="flex w-72 shrink-0 flex-col border-r border-softbrown/30 bg-cream/50 p-4">
+          <PoiSearchBox onPicked={(c) => setPendingCandidate(c)} />
+
+          <h2 className="mb-2 mt-4 text-sm font-semibold text-inkbrown/80">
             路线顺序（{ordered.length} 个地点）
           </h2>
-          <ol className="space-y-2">
+
+          <ol className="min-h-0 flex-1 space-y-2 overflow-y-auto">
             {ordered.map((node, index) => (
-              <li key={node.id} className="rounded-md bg-wash px-3 py-2 text-sm text-inkbrown">
-                <div className="font-medium">
-                  {index + 1}. {node.poi_name}
+              <li
+                key={node.id}
+                className="group flex items-start gap-2 rounded-md bg-wash px-3 py-2 text-sm text-inkbrown"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-medium">
+                    {index + 1}. {node.poi_name}
+                  </div>
+                  <div className="text-xs text-inkbrown/60">{node.visit_date}</div>
+                  {node.note ? <div className="mt-1 text-xs text-inkbrown/50">{node.note}</div> : null}
                 </div>
-                <div className="text-xs text-inkbrown/60">{node.visit_date}</div>
+                <button
+                  type="button"
+                  onClick={() => handleRemove(node)}
+                  aria-label={`删除 ${node.poi_name}`}
+                  className="shrink-0 rounded px-1 text-xs text-inkbrown/40 opacity-0 transition group-hover:opacity-100 hover:text-terracotta"
+                >
+                  删除
+                </button>
               </li>
             ))}
           </ol>
+
+          {ordered.length === 1 ? (
+            <p className="mt-2 text-xs text-inkbrown/50">再添加一个地点，就能画出路线了</p>
+          ) : null}
         </aside>
 
         <section className="min-w-0 flex-1">
           <MapCanvas />
         </section>
       </main>
+
+      {pendingCandidate ? (
+        <AddNodeDialog
+          candidate={pendingCandidate}
+          dateRange={dateRange}
+          onCancel={() => setPendingCandidate(null)}
+          onConfirm={handleConfirmAdd}
+        />
+      ) : null}
     </div>
   );
 }

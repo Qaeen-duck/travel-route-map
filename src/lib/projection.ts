@@ -10,7 +10,7 @@ import type { TravelNode } from '@/types/project';
  * 2) d3-geo 可以只 import 投影模块，不像 Leaflet/Mapbox 会拖进一整套地图引擎和瓦片请求。
  *    PRD 决策 5 明确「不使用地图瓦片渲染能力」，这里保持干净。
  * 3) fitExtent 一行搞定 PRD F7.2「按本次旅行节点的自然边界决定画布比例」，
- *    自动算缩放和平移，且等比缩放 —— 不会拉伸，这是 AC-13 不失真的底层保证。
+ *    自动算缩放和平移，且是等比缩放 —— 这是 AC-13 三种比例导出不失真的底层保证。
  *
  * 本函数是纯函数：不读 store、不写 store、无副作用。
  * 像素坐标永远是渲染期的派生值，绝不进持久化数据。
@@ -35,6 +35,43 @@ const SINGLE_NODE_SCALE = 20000;
 
 /** 判定「几乎重合」的经纬度阈值，约等于 0.1 米量级 */
 const DEGENERATE_EPS = 1e-6;
+
+/** 两个节点在画布上至少要拉开这么多像素，否则图标会叠在一起看不清 */
+const MIN_NODE_GAP_PX = 46;
+
+/**
+ * 重叠节点微偏移（PRD 状态清单「极端数据 · 节点重叠」）
+ *
+ * 做法：按顺序逐个落点，发现和已落点距离小于阈值就沿圆周往外挪，
+ * 挪的角度用黄金角（约 137.5°）递增，这样连续几个重叠点会散成一朵花而不是排成一条线。
+ * 这是纯视觉补偿，不会改动节点真实的 lat/lng。
+ */
+function spreadOverlaps(points: readonly ProjectedPoint[]): ProjectedPoint[] {
+  const GOLDEN_ANGLE = 2.399963; // 弧度，约 137.5°
+  const placed: ProjectedPoint[] = [];
+
+  for (const point of points) {
+    let x = point.x;
+    let y = point.y;
+    let attempt = 0;
+
+    while (attempt < 12) {
+      const tooClose = placed.some((p) => Math.hypot(p.x - x, p.y - y) < MIN_NODE_GAP_PX);
+      if (!tooClose) {
+        break;
+      }
+      attempt += 1;
+      const angle = GOLDEN_ANGLE * attempt;
+      const radius = MIN_NODE_GAP_PX * (0.7 + attempt * 0.25);
+      x = point.x + Math.cos(angle) * radius;
+      y = point.y + Math.sin(angle) * radius;
+    }
+
+    placed.push({ id: point.id, x, y });
+  }
+
+  return placed;
+}
 
 export function projectNodes(
   nodes: readonly TravelNode[],
@@ -77,12 +114,12 @@ export function projectNodes(
   const points: ProjectedPoint[] = [];
   for (const node of nodes) {
     const xy = projection([node.lng, node.lat]);
-    // 投影可能返回 null（点落在投影可视范围外，例如极区）；这类节点先跳过不渲染，
-    // 后续阶段再决定是提示用户还是裁切。
+    // 投影可能返回 null（点落在投影可视范围外，例如极区）；这类节点先跳过不渲染
     if (!xy) {
       continue;
     }
     points.push({ id: node.id, x: xy[0], y: xy[1] });
   }
-  return points;
+
+  return spreadOverlaps(points);
 }

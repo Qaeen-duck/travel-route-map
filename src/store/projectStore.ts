@@ -1,18 +1,16 @@
 import { create } from 'zustand';
 import { createId, healRouteOrder } from '@/lib/projectIo';
-import { SCHEMA_VERSION, type TravelNode, type TravelProject } from '@/types/project';
+import { SCHEMA_VERSION, type DateRange, type TravelNode, type TravelProject } from '@/types/project';
 
 /**
  * 全局唯一 store —— PRD 决策 1 的落地：
  * 「前端只做 读对象 → 渲染 / 改对象 → 写对象，不要把状态散落到组件内部 state」
  *
  * 为什么用 Zustand 而不是 Redux / Context：
- * 1) 本项目状态模型极简 —— 就一个 project 对象。Redux 的 action/reducer/middleware
- *    三件套在这里是纯负担，样板代码会比业务代码还多。
- * 2) Zustand 的 store 就是普通对象 + setter，天然贴合「整份 JSON 进出」的模型。
- *    P0-6 接 IndexedDB 时只要在外面挂一个 subscribe 做持久化，业务代码零改动。
- * 3) 比 Context 好在：组件可按字段订阅，改一个节点不会让整棵树重渲染。
- *    画布上会有几十个 Konva 节点，这个性能差异是实打实的。
+ * 1) 状态模型极简，就一个 project 对象。Redux 三件套在这里样板代码比业务代码还多。
+ * 2) store 就是普通对象 + setter，天然贴合「整份 JSON 进出」。P0-6 接 IndexedDB 时
+ *    只要在外面挂个 subscribe 做持久化，业务代码零改动。
+ * 3) 比 Context 强在能按字段订阅，改一个节点不会让整棵树重渲染。
  */
 
 interface ProjectState {
@@ -20,13 +18,11 @@ interface ProjectState {
   /** 最近一次导入产生的提示（数据自愈说明），展示后由 UI 清空 */
   notices: string[];
 
-  /** 整份替换（导入 JSON 用） */
   loadProject: (project: TravelProject, notices?: string[]) => void;
-  /** 追加节点，同时排进路线 */
+  /** 修改旅行名称 / 日期范围（PRD F1.1） */
+  updateTripMeta: (patch: { name?: string; date_range?: DateRange }) => void;
   addNode: (node: TravelNode) => void;
-  /** 删除节点，路线顺序同步清理 */
   removeNode: (nodeId: string) => void;
-  /** 手动指定路线顺序（P0-2 侧边栏拖拽会用） */
   setRouteOrder: (order: string[]) => void;
   clearNotices: () => void;
 }
@@ -39,76 +35,88 @@ function touch(project: TravelProject): TravelProject {
   };
 }
 
-/**
- * P0-1 的硬编码测试数据：杭州三个真实景点。
- * 选它们是因为三点不共线且拉得开，能一眼看出投影方向对不对 ——
- * 灵隐寺在西湖西边偏北，雷峰塔在西湖南边偏东，画布上必须呈现同样的相对方位。
- * P0-2 接入 POI 搜索后这份假数据会删掉。
- */
-function createSampleProject(): TravelProject {
-  const nowIso = new Date().toISOString();
-  const nodes: TravelNode[] = [
-    {
-      id: 'node_xihu',
-      poi_name: '西湖',
-      lat: 30.2401,
-      lng: 120.1445,
-      visit_date: '2026-07-20',
-      user_photo: null,
-      icon_type: 'text_only',
-      icon_asset: null,
-      note: '断桥残雪',
-    },
-    {
-      id: 'node_lingyin',
-      poi_name: '灵隐寺',
-      lat: 30.2417,
-      lng: 120.101,
-      visit_date: '2026-07-21',
-      user_photo: null,
-      icon_type: 'text_only',
-      icon_asset: null,
-      note: '',
-    },
-    {
-      id: 'node_leifeng',
-      poi_name: '雷峰塔',
-      lat: 30.2313,
-      lng: 120.1487,
-      visit_date: '2026-07-22',
-      user_photo: null,
-      icon_type: 'text_only',
-      icon_asset: null,
-      note: '日落',
-    },
-  ];
+/** 取本地日期的 YYYY-MM-DD。不能用 toISOString()，那个会转成 UTC，东八区凌晨会串到前一天 */
+export function todayLocalDate(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
 
+/**
+ * 把新节点按 visit_date 插进现有路线的正确位置（PRD F6.1）。
+ *
+ * 为什么不是「直接 push 到末尾再整体排序」：
+ * 整体排序会把用户之后手动拖拽出来的顺序冲掉。这里只找第一个日期比它晚的位置插进去，
+ * 同一天的排在已有的后面（F6.1：同日期按添加顺序），其余相对顺序原样不动。
+ * 这样 P0-2 自动排序和后续 P1 手动拖拽可以共存。
+ */
+function insertByVisitDate(
+  order: readonly string[],
+  nodes: readonly TravelNode[],
+  newNode: TravelNode,
+): string[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const next = [...order];
+  const insertAt = next.findIndex((id) => {
+    const node = byId.get(id);
+    return node !== undefined && node.visit_date > newNode.visit_date;
+  });
+  if (insertAt === -1) {
+    next.push(newNode.id);
+  } else {
+    next.splice(insertAt, 0, newNode.id);
+  }
+  return next;
+}
+
+/**
+ * 空工程。P0-2 起删掉了 P0-1 的杭州硬编码测试数据，
+ * 改为进入空状态引导（PRD 状态清单第一行），由用户自己搜索添加地点。
+ * 日期范围默认「今天到今天」，用户可在顶部直接改。
+ */
+function createEmptyProject(): TravelProject {
+  const nowIso = new Date().toISOString();
+  const today = todayLocalDate();
   return {
     schema_version: SCHEMA_VERSION,
     project: {
       id: createId('proj'),
-      name: '杭州三日游（测试数据）',
-      date_range: { start: '2026-07-20', end: '2026-07-22' },
+      name: '我的旅行',
+      date_range: { start: today, end: today },
       created_at: nowIso,
       updated_at: nowIso,
     },
-    nodes,
-    route_order: nodes.map((n) => n.id),
+    nodes: [],
+    route_order: [],
     export_settings: { last_used_ratio: '3:4', title_override: null },
   };
 }
 
 export const useProjectStore = create<ProjectState>((set) => ({
-  project: createSampleProject(),
+  project: createEmptyProject(),
   notices: [],
 
   loadProject: (project, notices = []) => set({ project, notices }),
 
+  updateTripMeta: (patch) =>
+    set((state) => ({
+      project: touch({
+        ...state.project,
+        project: {
+          ...state.project.project,
+          ...(patch.name === undefined ? {} : { name: patch.name }),
+          ...(patch.date_range === undefined ? {} : { date_range: patch.date_range }),
+        },
+      }),
+    })),
+
   addNode: (node) =>
     set((state) => {
       const nodes = [...state.project.nodes, node];
-      const healed = healRouteOrder(nodes, state.project.route_order);
-      return { project: touch({ ...state.project, nodes, route_order: healed.order }) };
+      const order = insertByVisitDate(state.project.route_order, nodes, node);
+      return { project: touch({ ...state.project, nodes, route_order: order }) };
     }),
 
   removeNode: (nodeId) =>
