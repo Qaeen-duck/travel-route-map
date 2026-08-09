@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * 附录 A.1 温暖水彩组色板 —— 单一真源。
+ * 这里用 R G B 三个数字（不带 rgb() 包裹）的写法，是为了让 Tailwind 的
+ * <alpha-value> 语法生效，可以写 bg-cream/60 这种带透明度的类名。
+ * P0-7 接 shadcn/ui 时，shadcn 的 --background / --primary 等变量直接引用这几个即可。
+ */
+:root {
+  --wc-terracotta: 201 122 94;  /* #C97A5E 陶土红 */
+  --wc-sage: 135 169 107;       /* #87A96B 鼠尾草绿 */
+  --wc-cream: 245 230 211;      /* #F5E6D3 奶油米 */
+  --wc-skyblue: 168 197 214;    /* #A8C5D6 淡水彩蓝 */
+  --wc-mustard: 212 169 74;     /* #D4A94A 芥末黄 */
+  --wc-softbrown: 139 111 71;   /* #8B6F47 淡棕 */
+  --wc-inkbrown: 90 74 58;      /* #5A4A3A 墨棕 */
+  --wc-wash: 249 243 233;       /* #F9F3E9 淡水彩底 */
+  --wc-coral: 232 155 122;      /* #E89B7A 珊瑚点缀 */
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  /* 禁用纯黑纯白（附录 A.1 禁用色），底色统一走淡水彩底 */
+  background-color: rgb(var(--wc-wash));
+  color: rgb(var(--wc-inkbrown));
+}
