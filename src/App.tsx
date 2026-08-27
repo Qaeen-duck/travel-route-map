@@ -1,18 +1,21 @@
-import { useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import AddNodeDialog from '@/components/AddNodeDialog';
 import ExportDialog from '@/components/ExportDialog';
 import MapCanvas from '@/components/MapCanvas';
 import NodeIconPanel from '@/components/NodeIconPanel';
 import PoiSearchBox from '@/components/PoiSearchBox';
+import { clearProjectLocal, loadProjectLocal, saveProjectLocal } from '@/lib/localProject';
 import { createId, downloadProjectJson, parseProjectFile, readFileAsText } from '@/lib/projectIo';
 import { orderNodes } from '@/lib/order';
 import { useAssetStore } from '@/store/assetStore';
-import { useProjectStore } from '@/store/projectStore';
+import { createEmptyProject, useProjectStore } from '@/store/projectStore';
 import type { PoiCandidate } from '@/types/poi';
 import type { TravelNode } from '@/types/project';
 
 /**
  * 应用外壳：顶部旅行信息 + 工具条，左侧搜索与路线列表，中间画布，右侧图标面板。
+ *
+ * P0-6 之后这里多了三件事：启动时恢复本地缓存、改动后自动保存、离开前提醒。
  */
 export default function App() {
   const project = useProjectStore((s) => s.project);
@@ -23,13 +26,59 @@ export default function App() {
   const updateExportSettings = useProjectStore((s) => s.updateExportSettings);
   const addNode = useProjectStore((s) => s.addNode);
   const removeNode = useProjectStore((s) => s.removeNode);
+
+  const hydrateAssets = useAssetStore((s) => s.hydrate);
+  const resetAssetsForProject = useAssetStore((s) => s.resetForProject);
   const dropNodeAssets = useAssetStore((s) => s.dropNode);
+  const assetsReady = useAssetStore((s) => s.ready);
+  const persistenceUnavailable = useAssetStore((s) => s.persistenceUnavailable);
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [pendingCandidate, setPendingCandidate] = useState<PoiCandidate | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [showExport, setShowExport] = useState(false);
+  /** 是否有「已改动但还没导出成 JSON」的内容，用于离开前提醒 */
+  const [dirty, setDirty] = useState(false);
+  /** 启动恢复是否已完成。完成前不许自动保存，否则会用空工程覆盖掉缓存 */
+  const bootedRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // —— 启动：恢复上次的工程与图片（P0-6）——
+  useEffect(() => {
+    const cached = loadProjectLocal();
+    const target = cached ?? project;
+    if (cached !== null) {
+      loadProject(cached);
+    }
+    void hydrateAssets(target.project.id).finally(() => {
+      bootedRef.current = true;
+    });
+    // 只在首次挂载执行
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // —— 自动保存矢量数据 ——
+  useEffect(() => {
+    if (!bootedRef.current) {
+      return;
+    }
+    saveProjectLocal(project);
+    setDirty(true);
+  }, [project]);
+
+  // —— 离开前提醒（PRD 第六章 防误操作）——
+  useEffect(() => {
+    if (!dirty) {
+      return;
+    }
+    const handler = (e: BeforeUnloadEvent) => {
+      // 现代浏览器只认 preventDefault，自定义文案早就被禁掉了
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [dirty]);
 
   const ordered = useMemo(
     () => orderNodes(project.nodes, project.route_order),
@@ -43,6 +92,7 @@ export default function App() {
 
   function handleExport(): void {
     downloadProjectJson(project);
+    setDirty(false);
   }
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>): Promise<void> {
@@ -64,7 +114,9 @@ export default function App() {
         setErrorMsg(result.message);
         return;
       }
-      // v1.2 决策 3：图片不进 JSON，所以导入后原本有图的节点会没有图，这里明确告知
+      // 图片不随 JSON 走（v1.2 决策 3），换工程时把旧工程的图片一并清掉
+      await resetAssetsForProject(result.project.project.id);
+
       const withIcon = result.project.nodes.filter((n) => n.icon_type !== 'text_only').length;
       const notes = [...result.notices];
       if (withIcon > 0) {
@@ -76,6 +128,18 @@ export default function App() {
     } catch {
       setErrorMsg('文件读取失败了，请重新选择一次。');
     }
+  }
+
+  async function handleClearAll(): Promise<void> {
+    if (!window.confirm('确定清空当前这趟旅行、重新开始吗？清空后无法恢复。')) {
+      return;
+    }
+    const fresh = createEmptyProject();
+    await resetAssetsForProject(fresh.project.id);
+    clearProjectLocal();
+    loadProject(fresh);
+    setSelectedNodeId(null);
+    setDirty(false);
   }
 
   function handleConfirmAdd(payload: { poiName: string; visitDate: string; note: string }): void {
@@ -96,14 +160,13 @@ export default function App() {
     };
     addNode(node);
     setPendingCandidate(null);
-    // 新加的节点直接选中，用户可以马上给它配图
     setSelectedNodeId(node.id);
   }
 
   function handleRemove(node: TravelNode): void {
     if (window.confirm(`确定删除「${node.poi_name}」吗？`)) {
       removeNode(node.id);
-      dropNodeAssets(node.id);
+      void dropNodeAssets(node.id);
       if (selectedNodeId === node.id) {
         setSelectedNodeId(null);
       }
@@ -161,6 +224,15 @@ export default function App() {
           >
             导入工程 JSON
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              void handleClearAll();
+            }}
+            className="rounded-md border border-softbrown/50 px-3 py-2 text-sm text-inkbrown/70 transition hover:bg-wash"
+          >
+            清空重来
+          </button>
         </div>
 
         <input
@@ -173,6 +245,12 @@ export default function App() {
           }}
         />
       </header>
+
+      {persistenceUnavailable ? (
+        <div className="border-b border-mustard/50 bg-mustard/10 px-5 py-2 text-sm text-inkbrown">
+          当前浏览器无法保存图片（可能是无痕模式）。这次做的图关掉页面就会丢失，记得及时导出。
+        </div>
+      ) : null}
 
       {dateRangeInvalid ? (
         <div className="border-b border-terracotta/40 bg-terracotta/10 px-5 py-2 text-sm text-inkbrown">
@@ -248,7 +326,9 @@ export default function App() {
             <p className="mt-2 text-xs text-inkbrown/50">再添加一个地点，就能画出路线了</p>
           ) : null}
           {ordered.length > 0 ? (
-            <p className="mt-2 text-xs text-inkbrown/40">点一个地点，可以给它配图标</p>
+            <p className="mt-2 text-xs text-inkbrown/40">
+              点一个地点，可以给它配图标{assetsReady ? '' : '（正在恢复上次的图片…）'}
+            </p>
           ) : null}
         </aside>
 

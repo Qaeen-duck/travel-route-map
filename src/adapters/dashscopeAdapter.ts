@@ -4,7 +4,7 @@ import {
   type GenerateIconResult,
   type ImageGenAdapter,
 } from '@/adapters/imageGenAdapter';
-import { fetchImageAsBlobUrl } from '@/lib/imageFile';
+import { fetchImageAsBlob } from '@/lib/imageFile';
 import { buildImg2ImgPrompt, buildText2ImgPrompt, NEGATIVE_PROMPT } from '@/lib/iconPrompt';
 
 /**
@@ -153,8 +153,8 @@ export const dashscopeAdapter: ImageGenAdapter = {
       }
 
       // 决策 3：链接 24 小时失效，必须立刻取回本地
-      const blobUrl = await fetchImageAsBlobUrl(remoteUrl);
-      return { blobUrl, remoteUrl };
+      const blob = await fetchImageAsBlob(remoteUrl);
+      return { blob, remoteUrl };
     } catch (error) {
       if (error instanceof ImageGenError) {
         throw error;

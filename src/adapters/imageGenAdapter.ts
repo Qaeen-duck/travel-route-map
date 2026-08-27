@@ -18,8 +18,8 @@ export interface GenerateIconInput {
 }
 
 export interface GenerateIconResult {
-  /** 已取回本地的同源 blob URL，可直接用于画布渲染与后续导出 */
-  blobUrl: string;
+  /** 已取回本地的图片二进制。调用方自己决定是渲染成 blob URL 还是存进 IndexedDB */
+  blob: Blob;
   /** 服务商返回的原始远端链接，仅用于排查问题；24 小时后失效 */
   remoteUrl: string;
 }

@@ -93,19 +93,18 @@ export function fileToScaledDataUrl(file: File): Promise<string> {
 }
 
 /**
- * 把远端图片经开发代理取回，转成同源 blob URL。
+ * 把远端图片经开发代理取回，转成可持久化的 Blob。
  *
  * 两个目的：
  * 1) 百炼返回的 OSS 链接 24 小时后失效，必须立刻取回来
  * 2) 同源 blob 不会污染 canvas，保证 P0-5 能正常导出 PNG
  */
-export async function fetchImageAsBlobUrl(remoteUrl: string): Promise<string> {
+export async function fetchImageAsBlob(remoteUrl: string): Promise<Blob> {
   const response = await fetch(`/imgproxy?url=${encodeURIComponent(remoteUrl)}`);
   if (!response.ok) {
     throw new Error('图片下载失败');
   }
-  const blob = await response.blob();
-  return URL.createObjectURL(blob);
+  return response.blob();
 }
 
 /** 触发浏览器下载一张图片（生成结果的「保存到本地」按钮用） */

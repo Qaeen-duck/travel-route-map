@@ -77,7 +77,7 @@ function insertByVisitDate(
 }
 
 /** 空工程。进入后是空状态引导（PRD 状态清单第一行），由用户自己搜索添加地点。 */
-function createEmptyProject(): TravelProject {
+export function createEmptyProject(): TravelProject {
   const nowIso = new Date().toISOString();
   const today = todayLocalDate();
   return {

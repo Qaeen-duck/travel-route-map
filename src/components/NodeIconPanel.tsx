@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import IconLibraryPicker from '@/components/IconLibraryPicker';
 import { dashscopeAdapter } from '@/adapters/dashscopeAdapter';
 import { ImageGenError } from '@/adapters/imageGenAdapter';
+import { dataUrlToBlob, revokeIfBlobUrl } from '@/lib/blobUtils';
 import { iconToDataUrl, type LibraryIcon } from '@/lib/iconLibrary';
 import { checkPhotoFile, downloadImage, fileToScaledDataUrl } from '@/lib/imageFile';
 import { getPaletteRefDataUrl } from '@/lib/paletteRef';
@@ -20,14 +21,13 @@ interface Props {
  * 节点图标面板（PRD F3 全节 / F4 / AC-5 ~ AC-8）
  *
  * 覆盖状态：未生成 → 生成中（可取消）→ 生成成功 / 生成失败
- * 成功和失败都进「四选一兜底面板」（F3.5 / F3.6）：
- * 用这张 / 重新生成 / 换成图标库图标 / 直接用我的原图
+ * 成功和失败都进「四选一兜底面板」（F3.5 / F3.6）。
  *
- * 图标库入口有两个：兜底面板里一个（PRD 规定），生成区里也放一个 ——
- * 因为图标库是免费的，用户想省钱直接选图标时，不该被迫先失败一次才能看到入口。
+ * 图标库入口有两个：兜底面板里一个（PRD 规定），生成区上面也放一个 ——
+ * 图标库是免费的，不该让用户先失败一次才发现有免费选项。
  *
- * 关于串行生成（F 冲突处理「一次只生成一个」）：
- * 面板一次只对一个选中节点打开，天然串行，不需要额外队列。
+ * P0-6 之后所有图片都以 Blob 形式交给 assetStore 落库，
+ * 组件这一层只负责「把各种来源统一转成 Blob」。
  */
 export default function NodeIconPanel({ node, onClose }: Props) {
   const assets = useAssetStore((s) => s.assets[node.id]);
@@ -37,8 +37,9 @@ export default function NodeIconPanel({ node, onClose }: Props) {
 
   const [status, setStatus] = useState<GenStatus>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  /** 刚生成出来、还没被用户「采用」的图 */
+  /** 刚生成出来、还没被用户「采用」的图：URL 用于预览，Blob 用于落库 */
   const [preview, setPreview] = useState<string | null>(null);
+  const [previewBlob, setPreviewBlob] = useState<Blob | null>(null);
   /** 镜像一份最新预览地址，供卸载时清理（state 会被闭包固化，ref 不会） */
   const previewRef = useRef<string | null>(null);
   previewRef.current = preview;
@@ -51,10 +52,7 @@ export default function NodeIconPanel({ node, onClose }: Props) {
   // 切换节点或关闭面板时，把没被采用的预览图释放掉，别漏内存
   useEffect(() => {
     return () => {
-      const pending = previewRef.current;
-      if (pending !== null) {
-        URL.revokeObjectURL(pending);
-      }
+      revokeIfBlobUrl(previewRef.current ?? undefined);
       abortRef.current?.abort();
     };
   }, []);
@@ -74,7 +72,7 @@ export default function NodeIconPanel({ node, onClose }: Props) {
     }
     try {
       const dataUrl = await fileToScaledDataUrl(checked.file);
-      setPhoto(node.id, dataUrl);
+      await setPhoto(node.id, await dataUrlToBlob(dataUrl));
     } catch (error) {
       setPhotoError(error instanceof Error ? error.message : '这张照片处理失败了，换一张试试。');
     }
@@ -95,10 +93,9 @@ export default function NodeIconPanel({ node, onClose }: Props) {
         paletteRefDataUrl: getPaletteRefDataUrl(),
         signal: controller.signal,
       });
-      if (previewRef.current !== null) {
-        URL.revokeObjectURL(previewRef.current);
-      }
-      setPreview(result.blobUrl);
+      revokeIfBlobUrl(previewRef.current ?? undefined);
+      setPreview(URL.createObjectURL(result.blob));
+      setPreviewBlob(result.blob);
       setStatus('done');
     } catch (error) {
       // 用户主动点了取消：回到未生成态，不报错
@@ -116,29 +113,33 @@ export default function NodeIconPanel({ node, onClose }: Props) {
   }
 
   /** 采用生成图（F3.5 用这张） */
-  function handleAdopt(): void {
-    if (preview === null) {
+  async function handleAdopt(): Promise<void> {
+    if (previewBlob === null) {
       return;
     }
-    setIcon(node.id, preview);
+    await setIcon(node.id, previewBlob);
     updateNode(node.id, { icon_type: 'ai_generated' });
+    // 预览的 URL 交给 assetStore 重新创建，这里的旧引用可以释放了
+    revokeIfBlobUrl(previewRef.current ?? undefined);
     setPreview(null);
+    setPreviewBlob(null);
     setStatus('idle');
   }
 
   /** 直接用原图（F3.5 第四项） */
-  function handleUseOriginalPhoto(): void {
-    if (assets?.photo === undefined) {
+  async function handleUseOriginalPhoto(): Promise<void> {
+    const photo = assets?.photo;
+    if (photo === undefined) {
       return;
     }
-    setIcon(node.id, assets.photo);
+    await setIcon(node.id, await dataUrlToBlob(photo));
     updateNode(node.id, { icon_type: 'user_photo' });
     setStatus('idle');
   }
 
   /** 用图标库图标（F3.5 第三项 / F4） */
-  function handlePickLibraryIcon(icon: LibraryIcon): void {
-    setIcon(node.id, iconToDataUrl(icon));
+  async function handlePickLibraryIcon(icon: LibraryIcon): Promise<void> {
+    await setIcon(node.id, await dataUrlToBlob(iconToDataUrl(icon)));
     updateNode(node.id, { icon_type: 'library_icon' });
     setShowLibrary(false);
     setStatus('idle');
@@ -166,7 +167,6 @@ export default function NodeIconPanel({ node, onClose }: Props) {
         </button>
       </div>
 
-      {/* 当前图标 */}
       <section className="mb-4">
         <h3 className="mb-2 text-xs font-semibold text-inkbrown/70">当前图标</h3>
         {assets?.icon !== undefined ? (
@@ -192,7 +192,9 @@ export default function NodeIconPanel({ node, onClose }: Props) {
         {showLibrary ? (
           <div className="mt-2">
             <IconLibraryPicker
-              onPick={handlePickLibraryIcon}
+              onPick={(icon) => {
+                void handlePickLibraryIcon(icon);
+              }}
               onCancel={() => setShowLibrary(false)}
             />
           </div>
@@ -297,8 +299,10 @@ export default function NodeIconPanel({ node, onClose }: Props) {
 
           <button
             type="button"
-            disabled={preview === null}
-            onClick={handleAdopt}
+            disabled={previewBlob === null}
+            onClick={() => {
+              void handleAdopt();
+            }}
             className="w-full rounded-md bg-terracotta px-3 py-1.5 text-xs text-cream disabled:cursor-not-allowed disabled:opacity-40 hover:bg-coral"
           >
             用这张
@@ -325,7 +329,9 @@ export default function NodeIconPanel({ node, onClose }: Props) {
           <button
             type="button"
             disabled={!hasPhoto}
-            onClick={handleUseOriginalPhoto}
+            onClick={() => {
+              void handleUseOriginalPhoto();
+            }}
             className="w-full rounded-md border border-softbrown px-3 py-1.5 text-xs text-inkbrown disabled:cursor-not-allowed disabled:opacity-40 hover:bg-wash"
           >
             直接用我的原图
