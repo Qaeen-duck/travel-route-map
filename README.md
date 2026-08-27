@@ -7,7 +7,7 @@
 - [x] **P0-1 骨架**：画布 + 节点数据结构 + JSON 序列化/反序列化
 - [x] **P0-2 核心链路**：POI 搜索 → 添加节点 → 按经纬度渲染 → 连线
 - [x] **P0-3 AI 图标**：照片上传 → 图生图 → 四选一兜底
-- [ ] P0-4 图标库兜底
+- [x] **P0-4 兜底**：内置图标库（自绘 SVG 占位素材）+ 用原图 + 纯文字节点
 - [ ] P0-5 三比例导出
 - [ ] P0-6 IndexedDB 本地缓存
 - [ ] P1 视觉打磨
@@ -69,6 +69,8 @@ src/
   lib/paletteRef.ts             色板参考图，运行时用 canvas 现画（手段 H1）
   lib/iconPrompt.ts             固化 prompt 模板（手段 H3）
   lib/imageFile.ts              图片校验/缩放/取回/下载
+  lib/iconLibrary.ts            内置图标库（自绘 SVG，附录 A.1 配色）
+  components/IconLibraryPicker.tsx  图标库分类选择面板
   components/MapCanvas.tsx      画布
   components/MapNodeShape.tsx   单节点呈现（决策 4，三形态共用接口）
   components/PoiSearchBox.tsx   地点搜索

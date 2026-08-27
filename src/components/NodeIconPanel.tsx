@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
+import IconLibraryPicker from '@/components/IconLibraryPicker';
 import { dashscopeAdapter } from '@/adapters/dashscopeAdapter';
 import { ImageGenError } from '@/adapters/imageGenAdapter';
+import { iconToDataUrl, type LibraryIcon } from '@/lib/iconLibrary';
 import { checkPhotoFile, downloadImage, fileToScaledDataUrl } from '@/lib/imageFile';
 import { getPaletteRefDataUrl } from '@/lib/paletteRef';
 import { useAssetStore } from '@/store/assetStore';
@@ -15,14 +17,17 @@ interface Props {
 }
 
 /**
- * 节点图标面板（PRD F3 全节 / AC-5 ~ AC-8）
+ * 节点图标面板（PRD F3 全节 / F4 / AC-5 ~ AC-8）
  *
- * 覆盖的状态：未生成 → 生成中（可取消）→ 生成成功 / 生成失败
+ * 覆盖状态：未生成 → 生成中（可取消）→ 生成成功 / 生成失败
  * 成功和失败都进「四选一兜底面板」（F3.5 / F3.6）：
  * 用这张 / 重新生成 / 换成图标库图标 / 直接用我的原图
  *
+ * 图标库入口有两个：兜底面板里一个（PRD 规定），生成区里也放一个 ——
+ * 因为图标库是免费的，用户想省钱直接选图标时，不该被迫先失败一次才能看到入口。
+ *
  * 关于串行生成（F 冲突处理「一次只生成一个」）：
- * 这个面板一次只对一个选中节点打开，天然就是串行的，不需要额外的队列。
+ * 面板一次只对一个选中节点打开，天然串行，不需要额外队列。
  */
 export default function NodeIconPanel({ node, onClose }: Props) {
   const assets = useAssetStore((s) => s.assets[node.id]);
@@ -38,20 +43,20 @@ export default function NodeIconPanel({ node, onClose }: Props) {
   const previewRef = useRef<string | null>(null);
   previewRef.current = preview;
   const [photoError, setPhotoError] = useState<string | null>(null);
+  const [showLibrary, setShowLibrary] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // 切换到别的节点时，把没被采用的预览图释放掉，别漏内存
+  // 切换节点或关闭面板时，把没被采用的预览图释放掉，别漏内存
   useEffect(() => {
     return () => {
-      if (previewRef.current !== null) {
-        URL.revokeObjectURL(previewRef.current);
+      const pending = previewRef.current;
+      if (pending !== null) {
+        URL.revokeObjectURL(pending);
       }
       abortRef.current?.abort();
     };
-    // 只在卸载时执行，preview 的最新值由闭包捕获，这里不需要依赖它
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handlePhotoChange(event: ChangeEvent<HTMLInputElement>): Promise<void> {
@@ -78,6 +83,7 @@ export default function NodeIconPanel({ node, onClose }: Props) {
   async function handleGenerate(): Promise<void> {
     setStatus('generating');
     setErrorMsg(null);
+    setShowLibrary(false);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -89,9 +95,8 @@ export default function NodeIconPanel({ node, onClose }: Props) {
         paletteRefDataUrl: getPaletteRefDataUrl(),
         signal: controller.signal,
       });
-      // 上一张没采用的预览先释放
-      if (preview !== null) {
-        URL.revokeObjectURL(preview);
+      if (previewRef.current !== null) {
+        URL.revokeObjectURL(previewRef.current);
       }
       setPreview(result.blobUrl);
       setStatus('done');
@@ -131,6 +136,14 @@ export default function NodeIconPanel({ node, onClose }: Props) {
     setStatus('idle');
   }
 
+  /** 用图标库图标（F3.5 第三项 / F4） */
+  function handlePickLibraryIcon(icon: LibraryIcon): void {
+    setIcon(node.id, iconToDataUrl(icon));
+    updateNode(node.id, { icon_type: 'library_icon' });
+    setShowLibrary(false);
+    setStatus('idle');
+  }
+
   const hasPhoto = assets?.photo !== undefined;
   const generating = status === 'generating';
   /** 生成成功或失败都要展示兜底面板（F3.6：主观不满意也走同一个面板） */
@@ -160,11 +173,30 @@ export default function NodeIconPanel({ node, onClose }: Props) {
           <img
             src={assets.icon}
             alt="当前图标"
-            className="h-28 w-28 rounded-md border border-softbrown/30 bg-wash object-cover"
+            className="h-28 w-28 rounded-md border border-softbrown/30 bg-wash object-contain"
           />
         ) : (
           <p className="text-xs text-inkbrown/40">还没有图标，这个地点现在显示为文字</p>
         )}
+      </section>
+
+      {/* 免费入口：图标库（放在生成前面，省得用户先花钱才发现有免费选项） */}
+      <section className="mb-4">
+        <button
+          type="button"
+          onClick={() => setShowLibrary((v) => !v)}
+          className="w-full rounded-md border border-softbrown px-3 py-2 text-sm text-inkbrown hover:bg-wash"
+        >
+          从图标库选一个（免费）
+        </button>
+        {showLibrary ? (
+          <div className="mt-2">
+            <IconLibraryPicker
+              onPick={handlePickLibraryIcon}
+              onCancel={() => setShowLibrary(false)}
+            />
+          </div>
+        ) : null}
       </section>
 
       {/* 照片上传（F2.2 / F2.4） */}
@@ -203,7 +235,7 @@ export default function NodeIconPanel({ node, onClose }: Props) {
 
       {/* 生成区 */}
       <section className="mb-4">
-        <h3 className="mb-2 text-xs font-semibold text-inkbrown/70">生成手绘图标</h3>
+        <h3 className="mb-2 text-xs font-semibold text-inkbrown/70">生成手绘图标（消耗额度）</h3>
 
         {!generating ? (
           <button
@@ -284,11 +316,10 @@ export default function NodeIconPanel({ node, onClose }: Props) {
 
           <button
             type="button"
-            disabled
-            title="图标库在下一阶段（P0-4）提供"
-            className="w-full cursor-not-allowed rounded-md border border-softbrown/40 px-3 py-1.5 text-xs text-inkbrown/40"
+            onClick={() => setShowLibrary(true)}
+            className="w-full rounded-md border border-softbrown px-3 py-1.5 text-xs text-inkbrown hover:bg-wash"
           >
-            换成图标库图标（P0-4 提供）
+            换成图标库图标
           </button>
 
           <button
