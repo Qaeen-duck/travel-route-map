@@ -1,20 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Circle, Layer, Line, Stage, Text } from 'react-konva';
+import { Layer, Line, Stage } from 'react-konva';
+import MapNodeShape from '@/components/MapNodeShape';
 import { orderNodes } from '@/lib/order';
 import { PALETTE } from '@/lib/palette';
 import { projectNodes } from '@/lib/projection';
 import { useProjectStore } from '@/store/projectStore';
 
+interface Props {
+  selectedNodeId: string | null;
+  onSelectNode: (nodeId: string | null) => void;
+}
+
 /**
  * 主画布（PRD F7）
  *
- * 为什么是 Konva 而不是 SVG/DOM：附录 B.2 定的。节点后续要拖拽、要分图层、
- * 还要整张导出成位图，Konva 在这三件事上比手写 canvas 省太多。这里不做替换。
- *
- * P0-1 只证明「数据 → 渲染」这条链路通：节点画成圆点 + 名字，连线画成虚线。
- * 水彩贴纸、手绘线、纸纹底这些视觉留到 P0-4 与 P1 打磨阶段。
+ * 为什么是 Konva 而不是 SVG/DOM：附录 B.2 定的。节点要拖拽、要分图层、
+ * 还要整张导出成位图，Konva 在这三件事上比手写 canvas 省太多。
  */
-export default function MapCanvas() {
+export default function MapCanvas({ selectedNodeId, onSelectNode }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
 
@@ -66,14 +69,23 @@ export default function MapCanvas() {
     <div ref={containerRef} className="relative h-full w-full bg-wash">
       {ordered.length === 0 ? (
         <div className="absolute inset-0 flex items-center justify-center text-inkbrown/60">
-          还没有地点，先添加你的第一个地点吧
+          还没有地点，先在左边搜索添加你的第一个地点吧
         </div>
       ) : null}
 
       {size.width > 0 && size.height > 0 ? (
-        <Stage width={size.width} height={size.height}>
+        <Stage
+          width={size.width}
+          height={size.height}
+          onClick={(e) => {
+            // 点空白处取消选中
+            if (e.target === e.target.getStage()) {
+              onSelectNode(null);
+            }
+          }}
+        >
           <Layer>
-            {/* 路线连线：F6.3 要求虚线、不生硬，先用虚线 + 轻微张力，曲线细化留到打磨阶段 */}
+            {/* 路线连线：F6.3 要求虚线、不生硬 */}
             {linePoints.length >= 4 ? (
               <Line
                 points={linePoints}
@@ -86,42 +98,20 @@ export default function MapCanvas() {
               />
             ) : null}
 
-            {/* 节点：P0-1 用最朴素的圆点占位 */}
             {ordered.map((node, index) => {
               const p = pointById.get(node.id);
               if (!p) {
                 return null;
               }
               return (
-                <Circle
+                <MapNodeShape
                   key={node.id}
+                  node={node}
                   x={p.x}
                   y={p.y}
-                  radius={14}
-                  fill={index === 0 ? PALETTE.coral : PALETTE.terracotta}
-                  stroke={PALETTE.cream}
-                  strokeWidth={3}
-                />
-              );
-            })}
-
-            {/* 节点标签：第几站 + POI 名称 */}
-            {ordered.map((node, index) => {
-              const p = pointById.get(node.id);
-              if (!p) {
-                return null;
-              }
-              return (
-                <Text
-                  key={`label-${node.id}`}
-                  x={p.x - 60}
-                  y={p.y + 20}
-                  width={120}
-                  align="center"
-                  text={`${index + 1}. ${node.poi_name}`}
-                  fontSize={14}
-                  fontFamily="PingFang SC, system-ui, sans-serif"
-                  fill={PALETTE.inkbrown}
+                  index={index}
+                  selected={selectedNodeId === node.id}
+                  onSelect={onSelectNode}
                 />
               );
             })}

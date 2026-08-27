@@ -1,16 +1,17 @@
 import { useMemo, useRef, useState, type ChangeEvent } from 'react';
 import AddNodeDialog from '@/components/AddNodeDialog';
 import MapCanvas from '@/components/MapCanvas';
+import NodeIconPanel from '@/components/NodeIconPanel';
 import PoiSearchBox from '@/components/PoiSearchBox';
 import { createId, downloadProjectJson, parseProjectFile, readFileAsText } from '@/lib/projectIo';
 import { orderNodes } from '@/lib/order';
+import { useAssetStore } from '@/store/assetStore';
 import { useProjectStore } from '@/store/projectStore';
 import type { PoiCandidate } from '@/types/poi';
 import type { TravelNode } from '@/types/project';
 
 /**
- * 应用外壳：顶部旅行信息 + 工具条，左侧搜索与路线列表，右侧画布。
- * P0-2 起画布不再有硬编码数据，进入空状态引导。
+ * 应用外壳：顶部旅行信息 + 工具条，左侧搜索与路线列表，中间画布，右侧图标面板。
  */
 export default function App() {
   const project = useProjectStore((s) => s.project);
@@ -20,15 +21,21 @@ export default function App() {
   const updateTripMeta = useProjectStore((s) => s.updateTripMeta);
   const addNode = useProjectStore((s) => s.addNode);
   const removeNode = useProjectStore((s) => s.removeNode);
+  const dropNodeAssets = useAssetStore((s) => s.dropNode);
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  /** 当前正在确认添加的候选地点；为 null 表示没有弹窗 */
   const [pendingCandidate, setPendingCandidate] = useState<PoiCandidate | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const ordered = useMemo(
     () => orderNodes(project.nodes, project.route_order),
     [project.nodes, project.route_order],
+  );
+
+  const selectedNode = useMemo(
+    () => project.nodes.find((n) => n.id === selectedNodeId) ?? null,
+    [project.nodes, selectedNodeId],
   );
 
   function handleExport(): void {
@@ -41,12 +48,12 @@ export default function App() {
     if (!file) {
       return;
     }
-    // PRD 第六章「防误操作」：覆盖当前工程要二次确认
     if (!window.confirm('导入会覆盖当前画布上的全部内容，确定继续吗？')) {
       return;
     }
     setErrorMsg(null);
     clearNotices();
+    setSelectedNodeId(null);
     try {
       const text = await readFileAsText(file);
       const result = parseProjectFile(text);
@@ -54,7 +61,15 @@ export default function App() {
         setErrorMsg(result.message);
         return;
       }
-      loadProject(result.project, result.notices);
+      // v1.2 决策 3：图片不进 JSON，所以导入后原本有图的节点会没有图，这里明确告知
+      const withIcon = result.project.nodes.filter((n) => n.icon_type !== 'text_only').length;
+      const notes = [...result.notices];
+      if (withIcon > 0) {
+        notes.push(
+          `有 ${withIcon} 个地点原来配了图片。图片不会保存在工程文件里，需要重新上传照片或重新生成图标。`,
+        );
+      }
+      loadProject(result.project, notes);
     } catch {
       setErrorMsg('文件读取失败了，请重新选择一次。');
     }
@@ -70,20 +85,25 @@ export default function App() {
       lat: pendingCandidate.lat,
       lng: pendingCandidate.lng,
       visit_date: payload.visitDate,
+      // v1.2 决策 3：图片资产不进工程数据，这两个字段固定为 null
       user_photo: null,
-      // P0-3 接 AI 生成之前，新节点一律先落成纯文字节点（F7.4 第四种形态）
       icon_type: 'text_only',
       icon_asset: null,
       note: payload.note,
     };
     addNode(node);
     setPendingCandidate(null);
+    // 新加的节点直接选中，用户可以马上给它配图
+    setSelectedNodeId(node.id);
   }
 
   function handleRemove(node: TravelNode): void {
-    // PRD 第六章：删除节点要二次确认
     if (window.confirm(`确定删除「${node.poi_name}」吗？`)) {
       removeNode(node.id);
+      dropNodeAssets(node.id);
+      if (selectedNodeId === node.id) {
+        setSelectedNodeId(null);
+      }
     }
   }
 
@@ -92,7 +112,6 @@ export default function App() {
 
   return (
     <div className="flex h-full w-full flex-col">
-      {/* 顶部：旅行信息可直接编辑（F1.1） */}
       <header className="flex flex-wrap items-center gap-3 border-b border-softbrown/30 bg-cream px-5 py-3">
         <input
           type="text"
@@ -183,25 +202,34 @@ export default function App() {
 
           <ol className="min-h-0 flex-1 space-y-2 overflow-y-auto">
             {ordered.map((node, index) => (
-              <li
-                key={node.id}
-                className="group flex items-start gap-2 rounded-md bg-wash px-3 py-2 text-sm text-inkbrown"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="truncate font-medium">
-                    {index + 1}. {node.poi_name}
-                  </div>
-                  <div className="text-xs text-inkbrown/60">{node.visit_date}</div>
-                  {node.note ? <div className="mt-1 text-xs text-inkbrown/50">{node.note}</div> : null}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleRemove(node)}
-                  aria-label={`删除 ${node.poi_name}`}
-                  className="shrink-0 rounded px-1 text-xs text-inkbrown/40 opacity-0 transition group-hover:opacity-100 hover:text-terracotta"
+              <li key={node.id}>
+                <div
+                  className={`group flex items-start gap-2 rounded-md px-3 py-2 text-sm text-inkbrown ${
+                    selectedNodeId === node.id ? 'bg-terracotta/15' : 'bg-wash'
+                  }`}
                 >
-                  删除
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedNodeId(node.id)}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <div className="truncate font-medium">
+                      {index + 1}. {node.poi_name}
+                    </div>
+                    <div className="text-xs text-inkbrown/60">{node.visit_date}</div>
+                    {node.note ? (
+                      <div className="mt-1 text-xs text-inkbrown/50">{node.note}</div>
+                    ) : null}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRemove(node)}
+                    aria-label={`删除 ${node.poi_name}`}
+                    className="shrink-0 rounded px-1 text-xs text-inkbrown/40 opacity-0 transition group-hover:opacity-100 hover:text-terracotta"
+                  >
+                    删除
+                  </button>
+                </div>
               </li>
             ))}
           </ol>
@@ -209,11 +237,22 @@ export default function App() {
           {ordered.length === 1 ? (
             <p className="mt-2 text-xs text-inkbrown/50">再添加一个地点，就能画出路线了</p>
           ) : null}
+          {ordered.length > 0 ? (
+            <p className="mt-2 text-xs text-inkbrown/40">点一个地点，可以给它配图标</p>
+          ) : null}
         </aside>
 
         <section className="min-w-0 flex-1">
-          <MapCanvas />
+          <MapCanvas selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} />
         </section>
+
+        {selectedNode !== null ? (
+          <NodeIconPanel
+            key={selectedNode.id}
+            node={selectedNode}
+            onClose={() => setSelectedNodeId(null)}
+          />
+        ) : null}
       </main>
 
       {pendingCandidate ? (

@@ -8,20 +8,27 @@ import { SCHEMA_VERSION, type DateRange, type TravelNode, type TravelProject } f
  *
  * 为什么用 Zustand 而不是 Redux / Context：
  * 1) 状态模型极简，就一个 project 对象。Redux 三件套在这里样板代码比业务代码还多。
- * 2) store 就是普通对象 + setter，天然贴合「整份 JSON 进出」。P0-6 接 IndexedDB 时
- *    只要在外面挂个 subscribe 做持久化，业务代码零改动。
+ * 2) store 就是普通对象 + setter，天然贴合「整份 JSON 进出」。
  * 3) 比 Context 强在能按字段订阅，改一个节点不会让整棵树重渲染。
+ *
+ * 注意（v1.2 决策 3）：这个 store 里的数据是**会被导出成 JSON 的矢量数据**。
+ * 图片资产一律不放这里，放 store/assetStore.ts，那份只活在会话内存。
  */
 
 interface ProjectState {
   project: TravelProject;
-  /** 最近一次导入产生的提示（数据自愈说明），展示后由 UI 清空 */
+  /** 最近一次导入产生的提示（数据自愈 / 图片丢失说明），展示后由 UI 清空 */
   notices: string[];
 
   loadProject: (project: TravelProject, notices?: string[]) => void;
   /** 修改旅行名称 / 日期范围（PRD F1.1） */
   updateTripMeta: (patch: { name?: string; date_range?: DateRange }) => void;
   addNode: (node: TravelNode) => void;
+  /** 局部更新一个节点（P0-3 用来切换 icon_type） */
+  updateNode: (
+    nodeId: string,
+    patch: Partial<Pick<TravelNode, 'icon_type' | 'poi_name' | 'note'>>,
+  ) => void;
   removeNode: (nodeId: string) => void;
   setRouteOrder: (order: string[]) => void;
   clearNotices: () => void;
@@ -46,11 +53,8 @@ export function todayLocalDate(): string {
 
 /**
  * 把新节点按 visit_date 插进现有路线的正确位置（PRD F6.1）。
- *
- * 为什么不是「直接 push 到末尾再整体排序」：
- * 整体排序会把用户之后手动拖拽出来的顺序冲掉。这里只找第一个日期比它晚的位置插进去，
- * 同一天的排在已有的后面（F6.1：同日期按添加顺序），其余相对顺序原样不动。
- * 这样 P0-2 自动排序和后续 P1 手动拖拽可以共存。
+ * 不用「push 到末尾再整体排序」，因为那会冲掉用户之后手动拖拽出来的顺序。
+ * 这里只找第一个日期比它晚的位置插进去，同一天的排在已有的后面，其余相对顺序不动。
  */
 function insertByVisitDate(
   order: readonly string[],
@@ -71,11 +75,7 @@ function insertByVisitDate(
   return next;
 }
 
-/**
- * 空工程。P0-2 起删掉了 P0-1 的杭州硬编码测试数据，
- * 改为进入空状态引导（PRD 状态清单第一行），由用户自己搜索添加地点。
- * 日期范围默认「今天到今天」，用户可在顶部直接改。
- */
+/** 空工程。进入后是空状态引导（PRD 状态清单第一行），由用户自己搜索添加地点。 */
 function createEmptyProject(): TravelProject {
   const nowIso = new Date().toISOString();
   const today = todayLocalDate();
@@ -118,6 +118,14 @@ export const useProjectStore = create<ProjectState>((set) => ({
       const order = insertByVisitDate(state.project.route_order, nodes, node);
       return { project: touch({ ...state.project, nodes, route_order: order }) };
     }),
+
+  updateNode: (nodeId, patch) =>
+    set((state) => ({
+      project: touch({
+        ...state.project,
+        nodes: state.project.nodes.map((n) => (n.id === nodeId ? { ...n, ...patch } : n)),
+      }),
+    })),
 
   removeNode: (nodeId) =>
     set((state) => {

@@ -141,9 +141,9 @@ function parseNode(raw: unknown, indexForHuman: number): { ok: true; node: Trave
       lat: raw['lat'],
       lng: raw['lng'],
       visit_date: raw['visit_date'],
-      user_photo: asNullableString(raw['user_photo']),
+      user_photo: null,
       icon_type: iconType,
-      icon_asset: asNullableString(raw['icon_asset']),
+      icon_asset: null,
       note: typeof raw['note'] === 'string' ? raw['note'] : '',
     },
   };
