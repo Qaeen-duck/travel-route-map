@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { createId, healRouteOrder } from '@/lib/projectIo';
-import { SCHEMA_VERSION, type DateRange, type TravelNode, type TravelProject } from '@/types/project';
+import { SCHEMA_VERSION, type DateRange, type ExportSettings, type TravelNode, type TravelProject } from '@/types/project';
 
 /**
  * 全局唯一 store —— PRD 决策 1 的落地：
@@ -32,6 +32,7 @@ interface ProjectState {
   removeNode: (nodeId: string) => void;
   setRouteOrder: (order: string[]) => void;
   clearNotices: () => void;
+  updateExportSettings: (patch: Partial<ExportSettings>) => void;
 }
 
 /** 任何写操作都刷新 updated_at */
@@ -141,4 +142,13 @@ export const useProjectStore = create<ProjectState>((set) => ({
     }),
 
   clearNotices: () => set({ notices: [] }),
+
+  /** 记住用户最后用的导出比例和自定义标题（PRD 决策1 的 export_settings） */
+  updateExportSettings: (patch) =>
+    set((state) => ({
+      project: touch({
+        ...state.project,
+        export_settings: { ...state.project.export_settings, ...patch },
+      }),
+    })),
 }));

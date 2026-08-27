@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState, type ChangeEvent } from 'react';
 import AddNodeDialog from '@/components/AddNodeDialog';
+import ExportDialog from '@/components/ExportDialog';
 import MapCanvas from '@/components/MapCanvas';
 import NodeIconPanel from '@/components/NodeIconPanel';
 import PoiSearchBox from '@/components/PoiSearchBox';
@@ -19,6 +20,7 @@ export default function App() {
   const loadProject = useProjectStore((s) => s.loadProject);
   const clearNotices = useProjectStore((s) => s.clearNotices);
   const updateTripMeta = useProjectStore((s) => s.updateTripMeta);
+  const updateExportSettings = useProjectStore((s) => s.updateExportSettings);
   const addNode = useProjectStore((s) => s.addNode);
   const removeNode = useProjectStore((s) => s.removeNode);
   const dropNodeAssets = useAssetStore((s) => s.dropNode);
@@ -26,6 +28,7 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [pendingCandidate, setPendingCandidate] = useState<PoiCandidate | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [showExport, setShowExport] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const ordered = useMemo(
@@ -137,6 +140,13 @@ export default function App() {
         </div>
 
         <div className="ml-auto flex gap-2">
+          <button
+            type="button"
+            onClick={() => setShowExport(true)}
+            className="rounded-md bg-sage px-4 py-2 text-sm text-cream transition hover:opacity-90"
+          >
+            导出图片
+          </button>
           <button
             type="button"
             onClick={handleExport}
@@ -254,6 +264,17 @@ export default function App() {
           />
         ) : null}
       </main>
+
+      {showExport ? (
+        <ExportDialog
+          project={project}
+          nodes={ordered}
+          onClose={() => setShowExport(false)}
+          onRatioUsed={(ratio, titleOverride) =>
+            updateExportSettings({ last_used_ratio: ratio, title_override: titleOverride })
+          }
+        />
+      ) : null}
 
       {pendingCandidate ? (
         <AddNodeDialog
